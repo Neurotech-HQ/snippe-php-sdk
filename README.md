@@ -40,92 +40,6 @@ echo $payment->status();    // "pending"
 
 ---
 
-## Architecture
-
-```mermaid
-classDiagram
-    class Snippe {
-        -string apiKey
-        -string baseUrl
-        -string defaultWebhookUrl
-        +mobileMoney(amount, phone) PaymentBuilder
-        +card(amount) PaymentBuilder
-        +qr(amount) PaymentBuilder
-        +find(reference) Payment
-        +payments(limit, offset) array
-        +balance() array
-        +push(reference, phone) array
-        +search(reference) array
-        +setWebhookUrl(url) self
-        +setTimeout(seconds) self
-    }
-
-    class PaymentBuilder {
-        -Snippe client
-        -array payload
-        +customer(name, email, lastName) self
-        +phone(phone) self
-        +billing(address, city, state, postcode, country) self
-        +webhook(url) self
-        +redirectTo(successUrl, cancelUrl) self
-        +metadata(data) self
-        +description(text) self
-        +idempotencyKey(key) self
-        +send() Payment
-        +toArray() array
-        +normalizePhone(phone)$ string
-    }
-
-    class Payment {
-        -array data
-        +reference() string
-        +status() string
-        +amount() int
-        +currency() string
-        +isPending() bool
-        +isCompleted() bool
-        +isFailed() bool
-        +isExpired() bool
-        +isVoided() bool
-        +paymentUrl() string
-        +qrCode() string
-        +fees() int
-        +netAmount() int
-        +toArray() array
-    }
-
-    class Webhook {
-        -array payload
-        -array headers
-        -string eventType
-        +capture()$ Webhook
-        +fromRaw(body, headers)$ Webhook
-        +isPaymentCompleted() bool
-        +isPaymentFailed() bool
-        +reference() string
-        +amount() int
-        +customer() array
-        +metadata() array
-        +ok() void
-        +fail(code) void
-    }
-
-    class SnippeException {
-        -array response
-        +getErrorCode() string
-        +getResponse() array
-    }
-
-    Snippe --> PaymentBuilder : creates
-    PaymentBuilder --> Payment : send returns
-    Snippe --> Payment : find returns
-    Webhook --|> SnippeException : throws
-    PaymentBuilder --|> SnippeException : throws
-    Snippe --|> SnippeException : throws
-```
-
----
-
 ## Installation
 
 ```bash
@@ -158,56 +72,9 @@ echo $payment->status();    // "pending" — USSD push sent to phone
 
 That's it. The customer gets a USSD prompt on their phone, enters their PIN, and you get a webhook when it's done.
 
-### How It All Works
-
-```mermaid
-sequenceDiagram
-    participant App as Your App
-    participant SDK as Snippe SDK
-    participant API as Snippe API
-    participant Phone as Customer Phone
-
-    App->>SDK: $snippe->mobileMoney(5000, phone)->send()
-    SDK->>API: POST /v1/payments
-    API-->>SDK: 201 Created { reference, status: pending }
-    SDK-->>App: Payment object
-
-    API->>Phone: USSD Push Notification
-    Phone->>API: Customer enters PIN
-
-    alt Payment Successful
-        API->>App: POST /webhook (payment.completed)
-        App->>SDK: Webhook::capture()
-        SDK-->>App: isPaymentCompleted() = true
-        App->>App: Update order to paid
-        App-->>API: 200 OK
-    else Payment Failed
-        API->>App: POST /webhook (payment.failed)
-        App->>SDK: Webhook::capture()
-        SDK-->>App: isPaymentFailed() = true
-        App->>App: Handle failure
-        App-->>API: 200 OK
-    end
-```
-
 ---
 
 ## Collecting Payments
-
-```mermaid
-flowchart LR
-    A["$snippe"] --> B["mobileMoney()"]
-    A --> C["card()"]
-    A --> D["qr()"]
-
-    B --> E["USSD push to phone"]
-    C --> F["Redirect to checkout page"]
-    D --> G["Display QR code to scan"]
-
-    E --> H["Webhook notification"]
-    F --> H
-    G --> H
-```
 
 ### Mobile Money
 
@@ -217,30 +84,6 @@ Supported: **Airtel Money**, **M-Pesa**, **Mixx by Yas**, **Halotel** (Tanzania)
 $payment = $snippe->mobileMoney(5000, '0754123456')
     ->customer('John Doe', 'john@email.com')
     ->send();
-```
-
-```mermaid
-sequenceDiagram
-    participant App as Your Server
-    participant SDK as Snippe SDK
-    participant API as Snippe API
-    participant MNO as Mobile Network
-    participant User as Customer Phone
-
-    App->>SDK: mobileMoney(5000, "0754123456")
-    SDK->>SDK: Normalize phone to 255754123456
-    SDK->>API: POST /v1/payments { payment_type: mobile }
-    API->>MNO: Request USSD push
-    API-->>SDK: { reference, status: pending }
-    SDK-->>App: Payment object
-
-    MNO->>User: USSD prompt appears
-    User->>MNO: Enters PIN
-    MNO->>API: Payment confirmed
-
-    API->>App: POST webhook { payment.completed }
-    App->>SDK: Webhook::capture()
-    App-->>API: 200 OK
 ```
 
 The customer receives a USSD push notification. They enter their PIN to authorize. You get a `payment.completed` or `payment.failed` webhook.
@@ -273,59 +116,11 @@ $payment = $snippe->card(10000)
 header('Location: ' . $payment->paymentUrl());
 ```
 
-```mermaid
-sequenceDiagram
-    participant App as Your Server
-    participant SDK as Snippe SDK
-    participant API as Snippe API
-    participant Browser as Customer Browser
-    participant Checkout as Secure Checkout
-
-    App->>SDK: card(10000)->billing(...)->redirectTo(success, cancel)->send()
-    SDK->>API: POST /v1/payments { payment_type: card }
-    API-->>SDK: { reference, payment_url, status: pending }
-    SDK-->>App: Payment object
-
-    App->>Browser: Redirect to payment->paymentUrl()
-    Browser->>Checkout: Customer enters card details
-    Checkout->>API: Process card payment
-
-    alt Success
-        Checkout->>Browser: Redirect to success_url
-        API->>App: POST webhook { payment.completed }
-    else Cancelled
-        Checkout->>Browser: Redirect to cancel_url
-        API->>App: POST webhook { payment.failed }
-    end
-```
-
 The customer is redirected to a secure checkout page, enters their card details, and is redirected back to your `redirect_url` or `cancel_url`.
 
 ### Dynamic QR
 
 Generate a QR code that customers scan with their mobile money app.
-
-```mermaid
-sequenceDiagram
-    participant App as Your Server
-    participant SDK as Snippe SDK
-    participant API as Snippe API
-    participant Page as Your Checkout Page
-    participant User as Customer Phone
-
-    App->>SDK: qr(5000)->customer(...)->send()
-    SDK->>API: POST /v1/payments { payment_type: dynamic-qr }
-    API-->>SDK: { reference, payment_qr_code, payment_url }
-    SDK-->>App: Payment object
-
-    App->>Page: Render payment->qrCode() as QR image
-    User->>Page: Scans QR with mobile money app
-    User->>User: Confirms payment in app
-
-    API->>App: POST webhook { payment.completed }
-    App->>SDK: Webhook::capture()
-    App-->>API: 200 OK
-```
 
 ```php
 $payment = $snippe->qr(5000)
@@ -345,25 +140,6 @@ $paymentUrl = $payment->paymentUrl();
 ## Webhooks
 
 When a payment completes or fails, Snippe sends a POST request to your webhook URL. The SDK makes handling it dead simple.
-
-```mermaid
-flowchart TD
-    A["Snippe API sends POST to your webhook URL"] --> B["Webhook::capture()"]
-    B --> C{"Parse JSON & normalize headers"}
-    C -->|Valid| D{"Check event type"}
-    C -->|Invalid JSON| E["Throw SnippeException"]
-
-    D -->|payment.completed| F["isPaymentCompleted() = true"]
-    D -->|payment.failed| G["isPaymentFailed() = true"]
-    D -->|other| H["eventType() returns raw string"]
-
-    F --> I["Get reference(), amount(), customer()"]
-    G --> I
-    H --> I
-
-    I --> J["Update your database"]
-    J --> K["$event->ok()  — respond 200"]
-```
 
 **webhook.php:**
 
@@ -543,25 +319,6 @@ $payment->object;       // "payment"
 
 ## Error Handling
 
-```mermaid
-flowchart LR
-    A["SDK makes API call"] --> B{"HTTP Status?"}
-    B -->|200-201| C["Return Payment object"]
-    B -->|400| D["SnippeException: validation_error"]
-    B -->|401| E["SnippeException: unauthorized"]
-    B -->|403| F["SnippeException: insufficient_scope"]
-    B -->|404| G["SnippeException: not_found"]
-    B -->|Network error| H["SnippeException: Network error"]
-
-    D --> I["catch SnippeException"]
-    E --> I
-    F --> I
-    G --> I
-    H --> I
-
-    I --> J["getMessage(), getCode(), getErrorCode(), getResponse()"]
-```
-
 All API errors throw `SnippeException` with the HTTP status code and full response.
 
 ```php
@@ -591,25 +348,6 @@ try {
 ---
 
 ## Phone Number Normalization
-
-```mermaid
-flowchart LR
-    A["Input phone"] --> B["Strip non-digits"]
-    B --> C{"Starts with +?"}
-    C -->|Yes| D["Remove +"]
-    C -->|No| E{"Starts with 0?"}
-
-    D --> F{"Starts with 255?"}
-    E -->|Yes| G["Replace 0 with 255"]
-    E -->|No| F
-
-    G --> H["255XXXXXXXXX"]
-    F -->|Yes| H
-    F -->|No| I{"9 digits?"}
-    I -->|Yes| J["Prepend 255"]
-    I -->|No| H
-    J --> H
-```
 
 The SDK automatically normalizes Tanzanian phone numbers. All of these work:
 
@@ -695,42 +433,6 @@ print_r($builder->toArray());
 ## Full Example: Bookstore
 
 A complete, working bookstore called **Duka la Vitabu** that accepts payments using the Snippe SDK. This was tested live against the real Snippe API.
-
-```mermaid
-sequenceDiagram
-    actor Customer
-    participant Shop as Bookstore UI
-    participant Pay as pay.php
-    participant SDK as Snippe SDK
-    participant API as Snippe API
-    participant WH as webhook.php
-    participant DB as orders.json
-
-    Customer->>Shop: Browse books & add to cart
-    Customer->>Shop: Fill checkout form
-    Shop->>Pay: POST name, email, phone, method, amount
-
-    Pay->>SDK: mobileMoney(1000, phone)->customer(name, email)->send()
-    SDK->>API: POST /v1/payments
-    API-->>SDK: { reference, status: pending }
-    SDK-->>Pay: Payment object
-
-    Pay->>DB: Save order { reference, status: pending, books }
-    Pay->>Shop: Redirect to success page
-
-    Note over API,Customer: Customer gets USSD push on phone and enters PIN
-
-    API->>WH: POST { payment.completed, reference }
-    WH->>SDK: Webhook::capture()
-    SDK-->>WH: isPaymentCompleted() = true
-    WH->>DB: Update order status to completed
-    WH-->>API: 200 OK
-
-    Customer->>Shop: View Orders page
-    Shop->>DB: Read orders
-    DB-->>Shop: order.status = completed
-    Shop-->>Customer: Order shows as paid
-```
 
 ### Project Structure
 
@@ -970,42 +672,6 @@ The test suite covers:
 - Payment response object methods
 - Error handling and exception data
 - Client configuration
-
----
-
-## Payment Status Flow
-
-```mermaid
-stateDiagram-v2
-    [*] --> pending : Payment Created
-
-    pending --> completed : Customer authorized payment
-    pending --> failed : Declined / timeout / error
-    pending --> expired : 4 hours without action
-    pending --> voided : Cancelled before completion
-
-    completed --> [*]
-    failed --> [*]
-    expired --> [*]
-    voided --> [*]
-
-    note right of pending
-        USSD push sent to phone
-        Waiting for customer PIN
-    end note
-
-    note right of completed
-        Funds received
-        Webhook: payment.completed
-    end note
-
-    note left of failed
-        Payment declined
-        Webhook: payment.failed
-    end note
-```
-
-Payments expire after **4 hours** if not completed. Create a new payment if the customer wants to retry.
 
 ---
 
