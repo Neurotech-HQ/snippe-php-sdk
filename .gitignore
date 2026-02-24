@@ -1,0 +1,49 @@
+# Dependencies
+/vendor/
+
+# Composer
+composer.lock
+composer.phar
+
+# PHPUnit
+.phpunit.result.cache
+.phpunit.cache/
+coverage/
+coverage.xml
+clover.xml
+junit.xml
+
+# PHP CS Fixer / Static Analysis
+.php-cs-fixer.cache
+.phpcs-cache
+phpstan.cache
+/psalm.cache
+
+# IDE / Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+nbproject/
+*.sublime-project
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Environment / Secrets
+.env
+.env.*
+!.env.example
+
+# Build artifacts
+*.phar
+build/
+dist/
+
+# Logs
+*.log
