@@ -42,6 +42,40 @@ class Webhook
         $this->eventType = $this->headers['x-webhook-event'] ?? '';
     }
 
+    // ── Signature Verification ──
+
+    /**
+     * Verify the webhook signature using HMAC-SHA256.
+     *
+     * @param string $secret Your webhook secret from the Snippe dashboard
+     * @return bool True if the signature is valid
+     */
+    public function isValid(string $secret): bool
+    {
+        $signature = $this->headers['x-webhook-signature'] ?? '';
+        if ($signature === '') {
+            return false;
+        }
+
+        $expected = hash_hmac('sha256', $this->rawBody, $secret);
+        return hash_equals($expected, $signature);
+    }
+
+    /**
+     * Verify signature or throw an exception.
+     *
+     * @param string $secret Your webhook secret
+     * @throws SnippeException if the signature is invalid
+     */
+    public function verify(string $secret): self
+    {
+        if (!$this->isValid($secret)) {
+            throw new SnippeException('Invalid webhook signature', 401);
+        }
+
+        return $this;
+    }
+
     // ── Factory methods ──
 
     /**
@@ -96,6 +130,16 @@ class Webhook
     public function isPaymentFailed(): bool
     {
         return $this->eventType === 'payment.failed';
+    }
+
+    public function isPayoutCompleted(): bool
+    {
+        return $this->eventType === 'payout.completed';
+    }
+
+    public function isPayoutFailed(): bool
+    {
+        return $this->eventType === 'payout.failed';
     }
 
     // ── Data accessors ──
