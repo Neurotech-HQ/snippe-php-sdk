@@ -3,85 +3,106 @@
 namespace Snippe;
 
 /**
- * Handles incoming Snippe webhook events.
+ * Handles and verifies incoming Snippe webhook events.
  *
- * Usage in your webhook.php:
+ * Signatures use HMAC-SHA256 over the exact raw request body and are sent as:
  *
- *   require 'vendor/autoload.php';
- *   use Snippe\Webhook;
- *
- *   $event = Webhook::capture();
- *
- *   if ($event->isPaymentCompleted()) {
- *       $ref = $event->reference();
- *       // Update your order to "paid"...
- *   }
- *
- *   if ($event->isPaymentFailed()) {
- *       // Handle failure...
- *   }
- *
- *   $event->ok(); // Always respond 200
+ *   X-Snippe-Signature: sha256=<hex digest>
  */
 class Webhook
 {
+    public const SIGNATURE_HEADER = 'x-snippe-signature';
+
     private array $payload;
     private array $headers;
     private string $eventType;
     private string $rawBody;
 
-    private function __construct(array $payload, array $headers, string $rawBody = '')
+    private function __construct(array $payload, array $headers, string $rawBody)
     {
         $this->payload = $payload;
         $this->rawBody = $rawBody;
-
-        // Normalize headers to lowercase for reliable lookup
         $this->headers = array_change_key_case($headers, CASE_LOWER);
-
-        // Extract event type from header (case-insensitive)
         $this->eventType = $this->headers['x-webhook-event'] ?? '';
     }
 
-    // ── Factory methods ──
-
     /**
-     * Capture the current incoming webhook request.
-     * Call this in your webhook endpoint.
+     * Capture and verify the current incoming webhook request.
      *
-     * @throws SnippeException if the payload isn't valid JSON
+     * The secret must come from secure server-side configuration. Never expose it
+     * in client-side code or commit it to source control.
+     *
+     * @throws SnippeException if verification fails or the payload is invalid
      */
-    public static function capture(): self
+    public static function capture(string $secret): self
     {
         $headers = function_exists('getallheaders') ? getallheaders() : self::parseHeaders();
-        $raw = file_get_contents('php://input');
-        $payload = json_decode($raw, true);
+        $rawBody = file_get_contents('php://input');
 
-        if ($payload === null && json_last_error() !== JSON_ERROR_NONE) {
+        if ($rawBody === false) {
             http_response_code(400);
-            throw new SnippeException(
-                'Invalid webhook payload: ' . json_last_error_msg(),
-                400
-            );
+            throw new SnippeException('Unable to read webhook payload', 400);
         }
 
-        return new self($payload ?? [], $headers, $raw);
+        try {
+            return self::fromRaw($rawBody, $headers, $secret);
+        } catch (SnippeException $exception) {
+            http_response_code($exception->getCode());
+            throw $exception;
+        }
     }
 
     /**
-     * Create from raw data (useful for testing)
+     * Create and verify a webhook from raw data. Useful for framework adapters
+     * and automated tests.
+     *
+     * @throws SnippeException if verification fails or the payload is invalid
      */
-    public static function fromRaw(string $body, array $headers = []): self
+    public static function fromRaw(string $body, array $headers, string $secret): self
     {
+        $normalizedHeaders = array_change_key_case($headers, CASE_LOWER);
+        self::verifySignature($body, $normalizedHeaders, $secret);
+
         $payload = json_decode($body, true);
 
-        if ($payload === null && json_last_error() !== JSON_ERROR_NONE) {
-            throw new SnippeException('Invalid webhook payload', 400);
+        if (!is_array($payload)) {
+            $message = json_last_error() === JSON_ERROR_NONE
+                ? 'Webhook payload must be a JSON object or array'
+                : 'Invalid webhook payload: ' . json_last_error_msg();
+
+            throw new SnippeException($message, 400);
         }
 
-        return new self($payload ?? [], $headers, $body);
+        return new self($payload, $normalizedHeaders, $body);
     }
 
-    // ── Event type checks ──
+    /**
+     * Verify an HMAC-SHA256 signature against the exact raw request body.
+     *
+     * @throws SnippeException when the secret/signature is missing or invalid
+     */
+    private static function verifySignature(string $body, array $headers, string $secret): void
+    {
+        if ($secret === '') {
+            throw new SnippeException('Webhook secret must not be empty', 500);
+        }
+
+        $provided = $headers[self::SIGNATURE_HEADER] ?? null;
+
+        if (!is_string($provided) || $provided === '') {
+            throw new SnippeException('Missing webhook signature', 401);
+        }
+
+        if (!preg_match('/^sha256=[a-f0-9]{64}$/i', $provided)) {
+            throw new SnippeException('Invalid webhook signature format', 401);
+        }
+
+        $expected = 'sha256=' . hash_hmac('sha256', $body, $secret);
+
+        if (!hash_equals($expected, strtolower($provided))) {
+            throw new SnippeException('Invalid webhook signature', 401);
+        }
+    }
 
     public function eventType(): string
     {
@@ -90,91 +111,71 @@ class Webhook
 
     public function isPaymentCompleted(): bool
     {
-        return $this->eventType === 'payment.completed';
+        return $this->eventType === 'payment.completed' && $this->status() === 'completed';
     }
 
     public function isPaymentFailed(): bool
     {
-        return $this->eventType === 'payment.failed';
+        return $this->eventType === 'payment.failed' && $this->status() === 'failed';
     }
 
-    // ── Data accessors ──
-
-    /**
-     * Get the payment reference
-     */
     public function reference(): ?string
     {
-        return $this->payload['data']['reference']
-            ?? $this->payload['reference']
-            ?? null;
+        $reference = $this->data()['reference'] ?? $this->payload['reference'] ?? null;
+
+        return is_string($reference) ? $reference : null;
     }
 
-    /**
-     * Get the payment status from payload
-     */
     public function status(): ?string
     {
-        return $this->payload['data']['status']
-            ?? $this->payload['status']
-            ?? null;
+        $status = $this->data()['status'] ?? $this->payload['status'] ?? null;
+
+        return is_string($status) ? $status : null;
     }
 
-    /**
-     * Get the payment amount
-     */
     public function amount(): ?int
     {
-        return $this->payload['data']['amount']['value']
-            ?? $this->payload['data']['amount']
-            ?? null;
+        $amount = $this->data()['amount'] ?? null;
+
+        if (is_array($amount)) {
+            $amount = $amount['value'] ?? null;
+        }
+
+        return is_int($amount) ? $amount : null;
     }
 
-    /**
-     * Get the currency
-     */
     public function currency(): ?string
     {
-        return $this->payload['data']['amount']['currency'] ?? null;
+        $amount = $this->data()['amount'] ?? null;
+        $currency = is_array($amount) ? ($amount['currency'] ?? null) : null;
+
+        return is_string($currency) ? $currency : null;
     }
 
-    /**
-     * Get customer info
-     */
     public function customer(): array
     {
-        return $this->payload['data']['customer'] ?? [];
+        $customer = $this->data()['customer'] ?? [];
+
+        return is_array($customer) ? $customer : [];
     }
 
-    /**
-     * Get custom metadata
-     */
     public function metadata(): array
     {
-        return $this->payload['data']['metadata'] ?? [];
+        $metadata = $this->data()['metadata'] ?? [];
+
+        return is_array($metadata) ? $metadata : [];
     }
 
-    /**
-     * Get the full webhook payload
-     */
     public function payload(): array
     {
         return $this->payload;
     }
 
-    /**
-     * Get the raw JSON body
-     */
     public function rawBody(): string
     {
         return $this->rawBody;
     }
 
-    // ── Response helpers ──
-
-    /**
-     * Respond 200 OK to Snippe (call this when you're done processing)
-     */
     public function ok(): void
     {
         http_response_code(200);
@@ -182,9 +183,6 @@ class Webhook
         echo json_encode(['ok' => true]);
     }
 
-    /**
-     * Respond with an error status
-     */
     public function fail(int $code = 400): void
     {
         http_response_code($code);
@@ -192,20 +190,27 @@ class Webhook
         echo json_encode(['ok' => false]);
     }
 
-    // ── Helpers ──
+    private function data(): array
+    {
+        $data = $this->payload['data'] ?? [];
+
+        return is_array($data) ? $data : [];
+    }
 
     /**
-     * Fallback header parser for environments without getallheaders()
+     * Fallback header parser for environments without getallheaders().
      */
     private static function parseHeaders(): array
     {
         $headers = [];
+
         foreach ($_SERVER as $key => $value) {
             if (str_starts_with($key, 'HTTP_')) {
                 $name = str_replace('_', '-', substr($key, 5));
                 $headers[$name] = $value;
             }
         }
+
         return $headers;
     }
 }
