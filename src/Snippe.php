@@ -124,6 +124,76 @@ class Snippe
             ->amount($amount);
     }
 
+    // ── Payout Builders ──
+
+    /**
+     * Create a mobile money payout.
+     *
+     * $snippe->mobileMoneyPayout(5000, '0754123456', 'John Doe')
+     *     ->narration('Salary payment')
+     *     ->send();
+     */
+    public function mobileMoneyPayout(int $amount, string $phone, string $recipientName): PayoutBuilder
+    {
+        return (new PayoutBuilder($this))
+            ->channel('mobile')
+            ->amount($amount)
+            ->recipientPhone($phone)
+            ->recipientName($recipientName);
+    }
+
+    /**
+     * Create a bank transfer payout.
+     *
+     * $snippe->bankPayout(5000, 'CRDB', '0200000000', 'John Doe')
+     *     ->narration('Invoice payment')
+     *     ->send();
+     */
+    public function bankPayout(int $amount, string $bank, string $account, string $recipientName): PayoutBuilder
+    {
+        return (new PayoutBuilder($this))
+            ->channel('bank')
+            ->amount($amount)
+            ->recipientBank($bank, $account)
+            ->recipientName($recipientName);
+    }
+
+    // ── Payout Operations ──
+
+    /**
+     * Get a payout by reference.
+     *
+     * $payout = $snippe->findPayout('667c9279-...');
+     * echo $payout->status(); // "completed"
+     */
+    public function findPayout(string $reference): Payout
+    {
+        $response = $this->request('GET', "/payouts/{$reference}");
+        return new Payout($response['data'] ?? $response);
+    }
+
+    /**
+     * List all payouts with pagination.
+     *
+     * $result = $snippe->payouts(limit: 20, offset: 0);
+     * $items = $result['data']['items'];
+     */
+    public function payouts(int $limit = 20, int $offset = 0): array
+    {
+        return $this->request('GET', "/payouts?limit={$limit}&offset={$offset}");
+    }
+
+    /**
+     * Calculate payout fee before sending.
+     *
+     * $fee = $snippe->payoutFee(5000);
+     * echo $fee['data']['fee_amount'];
+     */
+    public function payoutFee(int $amount): array
+    {
+        return $this->request('GET', '/payouts/fee?amount=' . $amount);
+    }
+
     // ── Payment Operations ──
 
     /**
