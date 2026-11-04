@@ -5,13 +5,14 @@ namespace Snippe;
 /**
  * Handles and verifies incoming Snippe webhook events.
  *
- * Signatures use HMAC-SHA256 over the exact raw request body and are sent as:
- *
- *   X-Snippe-Signature: sha256=<hex digest>
+ * Signature is HMAC-SHA256 of "{timestamp}.{raw body}", sent as
+ * X-Webhook-Signature. X-Webhook-Timestamp is the unix time.
  */
 class Webhook
 {
-    public const SIGNATURE_HEADER = 'x-snippe-signature';
+    public const SIGNATURE_HEADER = 'x-webhook-signature';
+    public const TIMESTAMP_HEADER = 'x-webhook-timestamp';
+    public const TOLERANCE_SECONDS = 300;
 
     private array $payload;
     private array $headers;
@@ -23,7 +24,11 @@ class Webhook
         $this->payload = $payload;
         $this->rawBody = $rawBody;
         $this->headers = array_change_key_case($headers, CASE_LOWER);
-        $this->eventType = $this->headers['x-webhook-event'] ?? '';
+        $eventType = $this->headers['x-webhook-event'] ?? '';
+        if ($eventType === '' && isset($payload['type']) && is_string($payload['type'])) {
+            $eventType = $payload['type'];
+        }
+        $this->eventType = $eventType;
     }
 
     // ── Signature Verification ──
@@ -36,13 +41,12 @@ class Webhook
      */
     public function isValid(string $secret): bool
     {
-        $signature = $this->headers['x-webhook-signature'] ?? '';
-        if ($signature === '') {
+        try {
+            self::verifySignature($this->rawBody, $this->headers, $secret);
+            return true;
+        } catch (SnippeException) {
             return false;
         }
-
-        $expected = hash_hmac('sha256', $this->rawBody, $secret);
-        return hash_equals($expected, $signature);
     }
 
     /**
@@ -113,9 +117,8 @@ class Webhook
     }
 
     /**
-     * Verify an HMAC-SHA256 signature against the exact raw request body.
-     *
-     * @throws SnippeException when the secret/signature is missing or invalid
+     * @param array<string, mixed> $headers Lowercase header names
+     * @throws SnippeException
      */
     private static function verifySignature(string $body, array $headers, string $secret): void
     {
@@ -124,16 +127,29 @@ class Webhook
         }
 
         $provided = $headers[self::SIGNATURE_HEADER] ?? null;
+        $timestamp = $headers[self::TIMESTAMP_HEADER] ?? null;
 
-        if (!is_string($provided) || $provided === '') {
+        if (!is_string($provided) || $provided === '' || !is_string($timestamp) || $timestamp === '') {
             throw new SnippeException('Missing webhook signature', 401);
         }
 
-        if (!preg_match('/^sha256=[a-f0-9]{64}$/i', $provided)) {
+        if (!preg_match('/^\d+$/', $timestamp)) {
+            throw new SnippeException('Invalid webhook timestamp', 401);
+        }
+
+        if (abs(time() - (int) $timestamp) > self::TOLERANCE_SECONDS) {
+            throw new SnippeException('Webhook timestamp expired', 401);
+        }
+
+        if (str_starts_with(strtolower($provided), 'sha256=')) {
+            $provided = substr($provided, 7);
+        }
+
+        if (!preg_match('/^[a-f0-9]{64}$/i', $provided)) {
             throw new SnippeException('Invalid webhook signature format', 401);
         }
 
-        $expected = 'sha256=' . hash_hmac('sha256', $body, $secret);
+        $expected = hash_hmac('sha256', $timestamp . '.' . $body, $secret);
 
         if (!hash_equals($expected, strtolower($provided))) {
             throw new SnippeException('Invalid webhook signature', 401);

@@ -174,14 +174,13 @@ $event->ok();
 
 **What `Webhook::capture($webhookSecret)` does for you:**
 - Reads the exact raw POST body from `php://input`
-- Verifies `X-Snippe-Signature` using HMAC-SHA256 and a constant-time comparison
-- Rejects missing, malformed, or invalid signatures with HTTP `401`
+- Verifies `X-Webhook-Signature` (HMAC-SHA256 of `{timestamp}.{raw body}`)
+- Rejects a missing, stale, or invalid signature with HTTP 401
 - Parses JSON safely (throws `SnippeException` on invalid JSON)
 - Normalizes headers to be **case-insensitive** (works on Apache, Nginx, PHP-FPM, etc.)
-- Extracts the event type from the `X-Webhook-Event` header
-- Requires the signed payload status to agree with the event header before reporting completion or failure
+- Reads the event type from `X-Webhook-Event`, then from the JSON `type` field
 
-The signature format is `sha256=<hex digest>`, calculated over the exact raw request body. Store the webhook secret in secure server-side configuration—never in source control or client-side code.
+The signature is the hex HMAC of the timestamp, a dot, and the raw body. Store the webhook secret in server-side config, not in the repo or the browser.
 
 ### Webhook Data Accessors
 
@@ -218,11 +217,13 @@ $body = json_encode([
 ]);
 
 $secret = 'whsec_test_secret';
-$signature = 'sha256=' . hash_hmac('sha256', $body, $secret);
+$timestamp = (string) time();
+$signature = hash_hmac('sha256', $timestamp . '.' . $body, $secret);
 
 $event = Webhook::fromRaw($body, [
     'X-Webhook-Event' => 'payment.completed',
-    'X-Snippe-Signature' => $signature,
+    'X-Webhook-Timestamp' => $timestamp,
+    'X-Webhook-Signature' => $signature,
 ], $secret);
 
 $event->isPaymentCompleted(); // true

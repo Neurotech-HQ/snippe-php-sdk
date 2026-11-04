@@ -51,12 +51,13 @@ class WebhookTest extends TestCase
     public function test_accepts_case_insensitive_headers(): void
     {
         $body = json_encode(['data' => ['reference' => 'ref-123', 'status' => 'completed']]);
-        $signature = $this->signature($body);
-
-        $event = Webhook::fromRaw($body, [
+        $headers = $this->signedHeaders($body, [
             'X-WEBHOOK-EVENT' => 'payment.completed',
-            'X-SNIPPE-SIGNATURE' => strtoupper($signature),
-        ], self::SECRET);
+        ]);
+        $headers['X-WEBHOOK-SIGNATURE'] = strtoupper($headers['X-Webhook-Signature']);
+        unset($headers['X-Webhook-Signature']);
+
+        $event = Webhook::fromRaw($body, $headers, self::SECRET);
 
         $this->assertTrue($event->isPaymentCompleted());
     }
@@ -85,7 +86,10 @@ class WebhookTest extends TestCase
         $this->expectExceptionCode(401);
         $this->expectExceptionMessage('Invalid webhook signature format');
 
-        Webhook::fromRaw('{}', ['X-Snippe-Signature' => 'not-a-signature'], self::SECRET);
+        Webhook::fromRaw('{}', [
+            'X-Webhook-Timestamp' => (string) time(),
+            'X-Webhook-Signature' => 'not-a-signature',
+        ], self::SECRET);
     }
 
     public function test_rejects_invalid_signature(): void
@@ -95,7 +99,8 @@ class WebhookTest extends TestCase
         $this->expectExceptionMessage('Invalid webhook signature');
 
         Webhook::fromRaw('{}', [
-            'X-Snippe-Signature' => 'sha256=' . str_repeat('0', 64),
+            'X-Webhook-Timestamp' => (string) time(),
+            'X-Webhook-Signature' => str_repeat('0', 64),
         ], self::SECRET);
     }
 
@@ -107,9 +112,7 @@ class WebhookTest extends TestCase
         $this->expectException(SnippeException::class);
         $this->expectExceptionCode(401);
 
-        Webhook::fromRaw($modified, [
-            'X-Snippe-Signature' => $this->signature($original),
-        ], self::SECRET);
+        Webhook::fromRaw($modified, $this->signedHeaders($original), self::SECRET);
     }
 
     public function test_rejects_empty_secret(): void
@@ -118,7 +121,7 @@ class WebhookTest extends TestCase
         $this->expectExceptionCode(500);
         $this->expectExceptionMessage('Webhook secret must not be empty');
 
-        Webhook::fromRaw('{}', ['X-Snippe-Signature' => $this->signature('{}')], '');
+        Webhook::fromRaw('{}', $this->signedHeaders('{}'), '');
     }
 
     public function test_rejects_invalid_json_after_valid_signature(): void
@@ -190,13 +193,15 @@ class WebhookTest extends TestCase
 
     private function webhook(string $body, array $headers = []): Webhook
     {
-        $headers['X-Snippe-Signature'] = $this->signature($body);
-
-        return Webhook::fromRaw($body, $headers, self::SECRET);
+        return Webhook::fromRaw($body, $this->signedHeaders($body, $headers), self::SECRET);
     }
 
-    private function signature(string $body): string
+    private function signedHeaders(string $body, array $headers = []): array
     {
-        return 'sha256=' . hash_hmac('sha256', $body, self::SECRET);
+        $timestamp = (string) time();
+        $headers['X-Webhook-Timestamp'] = $timestamp;
+        $headers['X-Webhook-Signature'] = hash_hmac('sha256', $timestamp . '.' . $body, self::SECRET);
+
+        return $headers;
     }
 }
